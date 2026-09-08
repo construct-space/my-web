@@ -1,0 +1,21 @@
+{
+  "name": "@construct-space/space-developer",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Construct Developer space — publish + manage spaces, browse schemas/data/stats, API keys, transfers. Fronts developer service + graph admin via my.lisaos.dev gateway.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "peerDependencies": {
+    "@construct-space/infra-shell": "workspace:*",
+    "@construct-space/ui-web": "workspace:*",
+    "@iconify/vue": "^5.0.0",
+    "vue": "^3.5.0"
+  }
+}

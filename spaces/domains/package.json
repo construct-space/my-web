@@ -1,0 +1,21 @@
+{
+  "name": "@construct-space/space-domains",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Construct Domains space — tenant-facing domain registration + DNS management. Search/buy domains, manage DNS records, configure URL forwarding, view SSL status.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "peerDependencies": {
+    "@construct-space/infra-shell": "workspace:*",
+    "@construct-space/ui-web": "workspace:*",
+    "@iconify/vue": "^5.0.0",
+    "vue": "^3.5.0"
+  }
+}

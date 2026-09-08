@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Construct Architecture Map</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg: #0b0d12;
+      --surface: #14171f;
+      --border: #232733;
+      --text: #e8eaf0;
+      --muted: #7a8193;
+      --accent: #8b5cf6;
+      --ok: #22c55e;
+      --warn: #f59e0b;
+      --danger: #ef4444;
+      --mono: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: -apple-system, system-ui, sans-serif; line-height: 1.55; }
+    .wrap { max-width: 1200px; margin: 0 auto; padding: 40px 32px 80px; }
+    h1 { font-size: 28px; font-weight: 600; letter-spacing: -0.3px; margin: 0 0 6px; }
+    h1 .sub { color: var(--muted); font-weight: 400; font-size: 18px; margin-left: 10px; }
+    h2 { font-size: 18px; font-weight: 600; margin: 40px 0 12px; letter-spacing: -0.1px; }
+    h3 { font-size: 14px; font-weight: 600; margin: 20px 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+    p, li { color: var(--text); }
+    code, pre { font-family: var(--mono); font-size: 13px; }
+    code { background: var(--surface); border: 1px solid var(--border); padding: 1px 6px; border-radius: 4px; }
+    pre { background: var(--surface); border: 1px solid var(--border); padding: 14px 16px; border-radius: 8px; overflow-x: auto; line-height: 1.5; }
+    .diagram {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px;
+      margin: 16px 0 32px;
+      overflow-x: auto;
+    }
+    .legend {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 10px;
+      margin: 12px 0 24px;
+    }
+    .legend-item {
+      padding: 10px 14px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      font-size: 13px;
+    }
+    .swatch { width: 14px; height: 14px; border-radius: 3px; flex-shrink: 0; }
+    .swatch.public { background: #3b82f6; }
+    .swatch.internal { background: #64748b; }
+    .swatch.client { background: var(--accent); }
+    .swatch.runtime { background: #10b981; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+      margin: 10px 0 24px;
+    }
+    th, td {
+      padding: 10px 12px;
+      text-align: left;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    th { color: var(--muted); font-weight: 500; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.6px; background: var(--surface); }
+    td code { font-size: 12px; }
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11.5px;
+      font-weight: 500;
+      border: 1px solid transparent;
+    }
+    .pill.public   { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.4); color: #60a5fa; }
+    .pill.runtime  { background: rgba(16,185,129,0.12); border-color: rgba(16,185,129,0.4); color: #34d399; }
+    .pill.internal { background: rgba(100,116,139,0.12); border-color: rgba(100,116,139,0.4); color: #94a3b8; }
+    .note {
+      background: rgba(139,92,246,0.08);
+      border-left: 3px solid var(--accent);
+      padding: 12px 16px;
+      border-radius: 4px;
+      margin: 16px 0;
+      font-size: 14px;
+    }
+    .note.warn { background: rgba(245,158,11,0.08); border-color: var(--warn); }
+    .footer { color: var(--muted); font-size: 12px; margin-top: 60px; border-top: 1px solid var(--border); padding-top: 20px; }
+    a { color: var(--accent); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Construct architecture<span class="sub">one console. one runtime. clean lines.</span></h1>
+
+  <div class="legend">
+    <div class="legend-item"><div class="swatch public"></div>Public console (my.lisaos.dev)</div>
+    <div class="legend-item"><div class="swatch runtime"></div>Public runtime API (product surface)</div>
+    <div class="legend-item"><div class="swatch internal"></div>Internal only (srv-captain--X)</div>
+    <div class="legend-item"><div class="swatch client"></div>Client (human or machine)</div>
+  </div>
+
+  <h2>System map</h2>
+
+  <div class="diagram">
+    <pre class="mermaid">
+flowchart TB
+
+  %% ─── Clients ─────────────────────────────────────────────────────
+  subgraph CLIENTS[" "]
+    direction LR
+    Browser["👤&nbsp;Browser user"]
+    CLI["⌨️&nbsp;construct-cli"]
+    Desktop["🖥️&nbsp;construct-app"]
+    SpaceRun["🌐&nbsp;Space runtime<br/><i>(any domain, 3rd-party)</i>"]
+  end
+
+  %% ─── Public surfaces ─────────────────────────────────────────────
+  My["<b>my.lisaos.dev</b><br/><i>THE console (SPA + nginx gateway)</i><br/>account · developer · org"]
+  Graph["<b>graph.lisaos.dev</b><br/><i>GraphQL runtime, nothing else</i><br/>POST /graphql · OPTIONS /graphql"]
+
+  %% ─── Internal services (behind my or private to graph) ───────────
+  subgraph INTERNAL["Internal (srv-captain--*)"]
+    direction LR
+    Accounts[("<b>accounts</b><br/>identity · OAuth · 2FA<br/>passkeys · validate-token")]
+    Developer[("<b>developer</b><br/>publisher registry · spaces<br/>versions · transfers<br/>schema façade → graph")]
+    Source[("<b>source</b><br/>orgs · members · projects")]
+    GraphSvc[("<b>graph</b> (service)<br/>GraphQL engine<br/>+ schema admin endpoints<br/>(internal only)")]
+  end
+
+  %% ─── Flows ────────────────────────────────────────────────────────
+  Browser  -->|"https"| My
+  Desktop  -->|"OAuth open"| My
+  CLI      -->|"login + publish + schemas"| My
+  Desktop  -->|"runtime queries via SDK"| Graph
+  SpaceRun -->|"runtime queries via SDK"| Graph
+
+  My -.->|"/api/accounts/*"| Accounts
+  My -.->|"/api/developer/*<br/>(spaces, publishers, schemas)"| Developer
+  My -.->|"/api/source/*"| Source
+
+  Developer -.->|"internal proxy<br/>schema admin, stats, data"| GraphSvc
+  Graph      -.->|"<i>same service</i>"| GraphSvc
+
+  Developer -.->|"validate cat_*"| Accounts
+  Graph     -.->|"validate cat_* / csk_*"| Accounts
+
+  classDef client fill:#2a1e4a,stroke:#8b5cf6,color:#e8eaf0;
+  classDef public fill:#0f1d3a,stroke:#3b82f6,color:#e8eaf0;
+  classDef runtime fill:#0a2420,stroke:#10b981,color:#e8eaf0;
+  classDef internal fill:#1a1e27,stroke:#64748b,color:#e8eaf0;
+  class Browser,CLI,Desktop,SpaceRun client;
+  class My public;
+  class Graph runtime;
+  class Accounts,Developer,Source,GraphSvc internal;
+    </pre>
+  </div>
+
+  <h2>The three public rules</h2>
+  <div class="note">
+    <b>1. my.lisaos.dev — the console.</b> All human UIs. All admin REST. Only place users log in.<br/>
+    <b>2. graph.lisaos.dev — the runtime.</b> <code>POST /graphql</code> only. No admin, no schema push, no stats publicly visible.<br/>
+    <b>3. No other public hostnames.</b> developer, accounts, source — all internal-only, reached through my.
+  </div>
+
+  <h2>What each public surface does</h2>
+  <table>
+    <thead><tr><th>Host</th><th>Role</th><th>Who hits it</th><th>What's exposed</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>my.lisaos.dev</code><br/><span class="pill public">Console</span></td>
+        <td>
+          Vue SPA + nginx gateway. Humans log in here. Every admin action lands here. Desktop OAuth opens here.
+        </td>
+        <td>Browser, construct-app (OAuth redirect), construct-cli (OAuth redirect)</td>
+        <td>
+          <code>/</code> SPA<br/>
+          <code>/login · /register · /forgot · /reset · /oauth/callback</code><br/>
+          <code>/api/accounts/*</code><br/>
+          <code>/api/developer/*</code><br/>
+          <code>/api/source/*</code><br/>
+          <code>/api/oauth/* · /api/auth/* · /api/verify-2fa · /api/passkey/login/*</code>
+        </td>
+      </tr>
+      <tr>
+        <td><code>graph.lisaos.dev</code><br/><span class="pill runtime">Runtime</span></td>
+        <td>
+          GraphQL API for space runtimes. Firestore-equivalent. <b>Stateless from the user's perspective</b> — users never visit this URL in a browser.
+        </td>
+        <td>SDK (<code>@construct-space/graph</code>) embedded in any space, on any domain</td>
+        <td>
+          <code>POST /graphql</code> (with CORS for space origins)<br/>
+          <code>OPTIONS /graphql</code><br/>
+          <i>(Nothing else. Admin endpoints moved internal.)</i>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Internal services</h2>
+  <table>
+    <thead><tr><th>Service</th><th>Owns</th><th>Reached via</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>accounts</code><br/><span class="pill internal">Internal</span></td>
+        <td>
+          Users, sessions, OAuth tokens, 2FA secrets, passkeys. Only service that knows passwords.<br/>
+          Serves <code>/internal/validate-token</code> for gateway auth_request.
+        </td>
+        <td>
+          my's gateway: <code>/api/accounts/*</code>, <code>/api/oauth/*</code>, <code>/api/auth/*</code>, <code>/api/verify-2fa</code>, <code>/api/passkey/login/*</code>, <code>/api/forgot-password</code>, <code>/api/reset-password</code>.<br/>
+          Also called service-to-service for token validation.
+        </td>
+      </tr>
+      <tr>
+        <td><code>developer</code><br/><span class="pill internal">Internal</span></td>
+        <td>
+          Publisher registry, spaces, versions, tarballs, transfers.<br/>
+          <b>Also the façade for graph-level admin:</b> <code>GET /api/schemas</code>, <code>GET /api/schemas/:space/models</code>, <code>GET /api/data/stats</code> — internally proxies to <code>srv-captain--graph</code>'s admin endpoints or queries the graph DB directly.
+        </td>
+        <td>
+          my's gateway: <code>/api/developer/*</code>.<br/>
+          CLI publish + schema push: via <code>/api/developer/*</code> through my (OAuth token).
+        </td>
+      </tr>
+      <tr>
+        <td><code>source</code><br/><span class="pill internal">Internal</span></td>
+        <td>Organizations, org members, roles, invites, org-level projects.</td>
+        <td>my's gateway: <code>/api/source/*</code>. Also called by accounts (scope enrichment) and developer (org-role checks).</td>
+      </tr>
+      <tr>
+        <td><code>graph</code> (service)<br/><span class="pill internal">Internal admin<br/>+ Public /graphql</span></td>
+        <td>
+          GraphQL engine: schemas, types, resolvers, subscriptions.<br/>
+          <b>Public surface = /graphql only.</b> Everything else (schema register, drop, admin stats, data browse) is internal-only and called by the developer service.
+        </td>
+        <td>
+          Public: <code>graph.lisaos.dev/graphql</code> (CORS for space origins).<br/>
+          Internal: <code>srv-captain--graph/api/*</code> — called by developer as façade.
+        </td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Clients</h2>
+  <table>
+    <thead><tr><th>Client</th><th>Where it authenticates</th><th>Where it calls</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="pill" style="background:rgba(139,92,246,0.15);border-color:rgba(139,92,246,0.4);color:#c4b5fd;">Browser</span></td>
+        <td><code>my/login</code> — session cookie on <code>my.lisaos.dev</code></td>
+        <td><code>my.lisaos.dev/api/*</code> (same-origin)</td>
+      </tr>
+      <tr>
+        <td><span class="pill" style="background:rgba(139,92,246,0.15);border-color:rgba(139,92,246,0.4);color:#c4b5fd;">construct-app</span></td>
+        <td>OAuth: opens <code>my/api/oauth/authorize</code>, catches code at loopback or deep-link. Stores <code>cat_*</code>.</td>
+        <td>
+          <code>my.lisaos.dev/api/*</code> for identity, profile, spaces, org.<br/>
+          <code>graph.lisaos.dev/graphql</code> for space runtime (direct, via SDK).
+        </td>
+      </tr>
+      <tr>
+        <td><span class="pill" style="background:rgba(139,92,246,0.15);border-color:rgba(139,92,246,0.4);color:#c4b5fd;">construct-cli</span></td>
+        <td>OAuth via <code>my/api/oauth/*</code> + device-code fallback.</td>
+        <td>
+          <code>my/api/developer/*</code> for publish, schemas, profile, transfers.<br/>
+          (No longer talks to <code>graph.c.s</code> for schemas — goes via developer.)
+        </td>
+      </tr>
+      <tr>
+        <td><span class="pill" style="background:rgba(139,92,246,0.15);border-color:rgba(139,92,246,0.4);color:#c4b5fd;">Space runtime</span></td>
+        <td>Cached <code>cat_*</code> from host (construct-app); anon for unauth'd spaces.</td>
+        <td><code>graph.lisaos.dev/graphql</code> only.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Developer space (inside my) — what users see</h2>
+  <p>A single "Developer" area in the console that contains everything:</p>
+  <table>
+    <thead><tr><th>Section</th><th>Backed by</th><th>Example endpoints</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>My spaces (list, publish, versions, readme)</td>
+        <td>developer service (its own data)</td>
+        <td><code>/api/developer/spaces</code>, <code>/api/developer/spaces/:name</code>, <code>POST /api/developer/publish</code></td>
+      </tr>
+      <tr>
+        <td>Schemas for a space (types, fields, indexes)</td>
+        <td>developer → graph internal</td>
+        <td><code>/api/developer/spaces/:name/schema</code></td>
+      </tr>
+      <tr>
+        <td>Data browser (rows, queries)</td>
+        <td>developer → graph internal</td>
+        <td><code>/api/developer/spaces/:name/data?model=…</code></td>
+      </tr>
+      <tr>
+        <td>Stats (queries/sec, storage, errors)</td>
+        <td>developer → graph internal</td>
+        <td><code>/api/developer/spaces/:name/stats</code></td>
+      </tr>
+      <tr>
+        <td>Publisher profile + API keys</td>
+        <td>developer service</td>
+        <td><code>/api/developer/publisher</code>, <code>/api/developer/api-keys</code></td>
+      </tr>
+    </tbody>
+  </table>
+
+  <div class="note">
+    From the user's perspective, there's no "graph" — there's spaces, and each space has data. From the dev's perspective, there's no "graph URL to admin" — <code>my.c.s/developer</code> is the one place.
+  </div>
+
+  <h2>What this means for the codebase</h2>
+  <table>
+    <thead><tr><th>Area</th><th>Change</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>my gateway (<code>nginx.conf.template</code>)</td>
+        <td><b>Drop</b> <code>/api/graph/</code> location. <b>Drop</b> <code>GRAPH_UPSTREAM</code> env var.</td>
+      </tr>
+      <tr>
+        <td>developer service</td>
+        <td>Grow: add <code>/api/schemas</code>, <code>/api/data</code>, <code>/api/stats</code> — each internally calls <code>srv-captain--graph/api/...</code>. Needs <code>GRAPH_INTERNAL_URL=http://srv-captain--graph</code> env.</td>
+      </tr>
+      <tr>
+        <td>graph service</td>
+        <td>Stop exposing admin endpoints publicly. Config change: bind admin routes only when <code>X-Internal-Secret</code> present (reject public requests to them). Or run a second listener (public <code>:80</code> serves only /graphql, internal <code>:8081</code> serves admin). <code>/graphql</code> public as always.</td>
+      </tr>
+      <tr>
+        <td>construct-cli</td>
+        <td>Change schema push/pull endpoints from <code>graph.c.s/api/schemas/*</code> to <code>my.c.s/api/developer/spaces/:name/schema</code>.</td>
+      </tr>
+      <tr>
+        <td>my SPA</td>
+        <td>Build the unified "Developer" space — spaces list + schema browser + data browser + stats. One UI, one backend namespace.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>Current gateway env vars (after this lands)</h2>
+  <pre>INTERNAL_SHARED_SECRET=&lt;shared&gt;
+ACCOUNTS_UPSTREAM=http://srv-captain--accounts
+DEVELOPER_UPSTREAM=http://srv-captain--developer
+SOURCE_UPSTREAM=http://srv-captain--source
+# GRAPH_UPSTREAM dropped — graph not proxied through my anymore</pre>
+
+  <div class="note warn">
+    <b>Migration order that doesn't break things:</b><br/>
+    1. developer service grows the façade endpoints (schemas/data/stats internally proxying to graph).<br/>
+    2. my SPA's "Developer" space calls the new façade endpoints (temporarily working alongside direct graph calls).<br/>
+    3. CLI updated to push schemas via developer.<br/>
+    4. graph's public admin endpoints removed / gated.<br/>
+    5. GRAPH_UPSTREAM dropped from my.<br/>
+    Skipping steps = broken CLI / broken admin UI.
+  </div>
+
+  <div class="footer">
+    Rendered with Mermaid. Edit <code>map.html</code> to iterate. &middot; Source of truth: <a href="docs/PRD-unified-frontend-api-gateway.md">docs/PRD-unified-frontend-api-gateway.md</a>
+  </div>
+</div>
+
+<script>
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      background: '#14171f',
+      primaryColor: '#1a1e27',
+      primaryTextColor: '#e8eaf0',
+      primaryBorderColor: '#64748b',
+      lineColor: '#94a3b8',
+      secondaryColor: '#0f1d3a',
+      tertiaryColor: '#2a1e4a',
+      fontFamily: '-apple-system, system-ui, sans-serif',
+    },
+    flowchart: { curve: 'basis', padding: 20, nodeSpacing: 40, rankSpacing: 70 },
+  });
+</script>
+</body>
+</html>

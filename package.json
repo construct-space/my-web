@@ -1,0 +1,19 @@
+{
+  "name": "@construct-space/my",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Construct unified user portal — my.lisaos.dev. Vue SPA + nginx gateway + shared SDK that fronts all internal services.",
+  "workspaces": [
+    "packages/*",
+    "spaces/*",
+    "core"
+  ],
+  "scripts": {
+    "dev": "bun run clean && cd core && bun run dev",
+    "build": "cd core && bun run build",
+    "clean": "trash core/node_modules/.vite packages/ui-web/dist 2>/dev/null; true"
+  },
+  "devDependencies": {
+    "@vue/server-renderer": "3.5.33"
+  }
+}

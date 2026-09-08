@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Construct — Opening</title>
+  <link rel="icon" type="image/svg+xml" href="/construct-mark.svg" />
+  <!-- Visual language mirrors the operator's OAuth callback pages
+       (operator/internal/oauth/types.go): warm cream canvas, no card
+       chrome, hero column with the Construct mark, eyebrow + oversized
+       headline ending in a red period, lead copy, red CTA, Construct. footer.
+       Rubik is self-hosted under /fonts (the portal CSP is font-src 'self',
+       so the Google Fonts CDN is blocked — same-origin only). -->
+  <style>
+    @font-face{
+      font-family:'Rubik Variable';
+      font-style:normal;
+      font-display:swap;
+      font-weight:300 900;
+      src:url('/fonts/rubik-latin-variable.woff2') format('woff2');
+    }
+    :root{
+      --bg:#FBF7F5;--border:#EDE6E1;
+      --fg:#14110F;--muted:#6B6560;
+      --accent:#FF2D55;--danger:#D7263D;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      font:15px/1.55 'Rubik Variable',-apple-system,BlinkMacSystemFont,Inter,system-ui,sans-serif;
+      margin:0;background:var(--bg);color:var(--fg);
+      display:flex;flex-direction:column;align-items:center;justify-content:center;
+      padding:48px 32px;
+    }
+    .hero{width:100%;max-width:640px;text-align:left}
+    .mark{height:48px;width:auto;display:block;margin-bottom:40px}
+    .eyebrow{
+      display:inline-flex;align-items:center;gap:8px;margin-bottom:16px;
+      font-size:12px;font-weight:700;letter-spacing:.22em;text-transform:uppercase;
+      color:var(--accent);
+    }
+    .eyebrow.error{color:var(--danger)}
+    h1{
+      margin:0 0 24px;font-size:clamp(40px,11vw,64px);font-weight:800;
+      letter-spacing:-.02em;color:var(--fg);line-height:1;
+    }
+    h1 .dot{color:var(--accent)}
+    p{margin:0 0 16px;font-size:16px;color:var(--muted);line-height:1.6;max-width:560px}
+    p.lead{color:var(--fg);font-size:18px;margin-bottom:12px;font-weight:400}
+    .target{
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;
+      color:var(--fg);background:rgba(255,45,85,.06);padding:2px 8px;border-radius:6px;
+      border-bottom:2px solid var(--accent);word-break:break-word;
+    }
+    .actions{display:flex;gap:14px;margin-top:32px;align-items:center;flex-wrap:wrap}
+    button.cta{
+      appearance:none;background:var(--accent);color:#fff;border:none;border-radius:8px;
+      padding:14px 32px;font:600 14px/1 'Rubik Variable',-apple-system,Inter,system-ui,sans-serif;
+      cursor:pointer;transition:filter .15s ease,transform .05s ease;
+    }
+    button.cta:hover{filter:brightness(1.06)}
+    button.cta:active{transform:translateY(1px)}
+    .hint{font-size:13px;color:var(--muted)}
+    .footer{
+      margin-top:64px;font-size:11px;color:var(--muted);letter-spacing:.22em;
+      text-transform:uppercase;font-weight:700;
+    }
+    .footer .dot{color:var(--accent)}
+    .hidden{display:none}
+  </style>
+</head>
+<body>
+  <div id="ok" class="hero">
+    <img class="mark" src="/construct-mark.svg" alt="Construct" width="48" height="48" />
+    <div class="eyebrow"><span>Deep link</span></div>
+    <h1>Opening Construct<span class="dot">.</span></h1>
+    <p class="lead">Taking you to <span class="target" id="target-label"></span></p>
+    <p>If the app doesn&rsquo;t come forward on its own, use the button below.</p>
+    <div class="actions">
+      <button class="cta" id="open-btn" type="button">Open in Construct</button>
+      <span class="hint">requires the Construct desktop app</span>
+    </div>
+    <div class="footer">Construct<span class="dot">.</span></div>
+  </div>
+
+  <div id="bad" class="hero hidden">
+    <img class="mark" src="/construct-mark.svg" alt="Construct" width="48" height="48" />
+    <div class="eyebrow error"><span>Invalid link</span></div>
+    <h1>That link&rsquo;s off<span class="dot">.</span></h1>
+    <p class="lead">This share link isn&rsquo;t a valid Construct destination.</p>
+    <p>Double-check the URL, or ask whoever sent it for a fresh one.</p>
+    <div class="footer">Construct<span class="dot">.</span></div>
+  </div>
+
+  <!-- External script (absolute /open.js) — CSP is script-src 'self', so
+       inline scripts are blocked but a same-origin file is allowed. Absolute
+       path because the page is served under /open/<space>/<path>. -->
+  <script src="/open.js"></script>
+</body>
+</html>

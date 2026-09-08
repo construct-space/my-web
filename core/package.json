@@ -1,0 +1,40 @@
+{
+  "name": "@construct-space/infra-core",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Construct infra — the main app shell. Hosts infra spaces (profile, developer, org, billing, …) and exposes global settings. Served as the Construct Account portal.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@construct-space/infra": "workspace:*",
+    "@construct-space/infra-shell": "workspace:*",
+    "@construct-space/space-account": "workspace:*",
+    "@construct-space/space-delivery": "workspace:*",
+    "@construct-space/space-developer": "workspace:*",
+    "@construct-space/space-domains": "workspace:*",
+    "@construct-space/space-org": "workspace:*",
+    "@construct-space/ui-web": "workspace:*",
+    "@fontsource-variable/rubik": "^5.2.8",
+    "@iconify/vue": "^5.0.0",
+    "lucide-vue-next": "^1.0.0",
+    "pinia": "^3.0.4",
+    "reka-ui": "^2.9.6",
+    "unplugin-auto-import": "^21.0.0",
+    "unplugin-vue-components": "^32.0.0",
+    "vue": "3.5.33",
+    "vue-router": "^5.0.4"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.2",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "tailwindcss": "^4.2.2",
+    "typescript": "^6.0.2",
+    "vite": "^8.0.3",
+    "vue-tsc": "^2.2.10"
+  }
+}

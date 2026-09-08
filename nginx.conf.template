@@ -1,0 +1,785 @@
+# Rendered by /entrypoint.sh at container startup via envsubst.
+# Variables: ${ACCOUNTS_UPSTREAM}, ${DEVELOPER_UPSTREAM}, ${MARKETPLACE_UPSTREAM},
+#            ${PROVIDER_UPSTREAM}, ${SOURCE_UPSTREAM}, ${GRAPH_UPSTREAM},
+#            ${TELEMETRY_UPSTREAM}, ${BILLING_UPSTREAM}, ${STORAGE_UPSTREAM},
+#            ${INTERNAL_SHARED_SECRET}
+
+map $http_x_request_id $request_id_final {
+    default   $http_x_request_id;
+    ""        $request_id;
+}
+
+# CORS allowlist. We echo the caller's Origin only when it's one of these;
+# otherwise $cors_origin is empty and the browser refuses the response.
+# Matches: the portal itself, Vite dev (construct-app + my/core), Tauri
+# webview origins (both bundled + dev), and null (Tauri sends Origin: null
+# from some webview configurations).
+map $http_origin $cors_origin {
+    default                             "";
+    "https://my.lisaos.dev"        $http_origin;
+    "http://localhost:60200"             $http_origin;
+    "http://localhost:60100"             $http_origin;
+    "http://localhost:3000"              $http_origin;
+    "http://localhost:1420"              $http_origin;
+    "tauri://localhost"                  $http_origin;
+    # Both HTTP and HTTPS variants: WKWebView on macOS uses tauri:// or
+    # https://tauri.localhost; WebView2 on Windows serves the bundled
+    # frontend over http://tauri.localhost (the internal protocol has
+    # no TLS). Omitting either variant breaks login on that platform.
+    "http://tauri.localhost"             $http_origin;
+    "https://tauri.localhost"            $http_origin;
+    "null"                               $http_origin;
+}
+
+# log_format must live at http scope, not inside server{}. This file is
+# included under http{} via conf.d/default.conf, so directives here are
+# http-scope by default.
+log_format json_combined escape=json
+    '{'
+        '"ts":"$time_iso8601",'
+        '"service":"gateway",'
+        '"remote_addr":"$remote_addr",'
+        '"method":"$request_method",'
+        '"path":"$request_uri",'
+        '"status":$status,'
+        '"bytes":$body_bytes_sent,'
+        '"duration_ms":$request_time,'
+        '"request_id":"$request_id_final",'
+        '"upstream":"$upstream_addr",'
+        '"upstream_status":"$upstream_status",'
+        '"user_agent":"$http_user_agent"'
+    '}';
+
+server {
+    listen 80;
+    server_name _;
+
+    # Docker's embedded DNS — required for nginx to resolve srv-captain--*
+    # service names at request time (inside CapRover's Swarm overlay network).
+    # Without this, upstream proxy_pass returns 500/502 because nginx can't
+    # resolve the hostname. Matches CapRover's own per-app nginx template.
+    resolver 127.0.0.11 ipv6=off valid=10s;
+
+    access_log /dev/stdout json_combined;
+    error_log  /dev/stderr warn;
+
+    client_max_body_size 20m;
+
+    # Upstream timeouts. 30s was too tight for slower third-party reads
+    # (Gmail thread fetches with attachments, Drive blob streams). Bumped
+    # to 120s; individual SSE/streaming endpoints override locally
+    # (chat = 600s, notifications = 1h further down).
+    proxy_read_timeout    120s;
+    proxy_send_timeout    120s;
+    proxy_connect_timeout 10s;
+
+    # Client keepalive. Has to outlive node-http-proxy / reqwest's idle
+    # window (~60s on both) so the gateway is NOT the first end of the
+    # pipe to close the socket — that's what surfaces as a `read
+    # ECONNRESET` mid-response in vite's dev proxy logs.
+    keepalive_timeout   75s;
+    keepalive_requests  1000;
+
+
+    # Force any auto-redirect (e.g. trailing-slash 301 for "/api/domains" →
+    # "/api/domains/") to emit a relative Location. CapRover terminates TLS
+    # in front of us, so $scheme here is "http"; without this nginx would
+    # produce "http://my.lisaos.dev/..." and CSP "connect-src 'self'
+    # https:" blocks the redirect on the browser side.
+    absolute_redirect off;
+    port_in_redirect off;
+    server_name_in_redirect off;
+
+    # nginx defaults (1k / 4×8k) are tight for OAuth-style requests:
+    # Authorization Bearer + browser cookies + Sec-* headers can blow past
+    # them and fail with a bare 400 before any location block runs (no
+    # CORS headers, no audit log entry — looks like upstream nginx 400 but
+    # is the gateway itself).
+    client_header_buffer_size      4k;
+    large_client_header_buffers    8 16k;
+    proxy_buffer_size              16k;
+    proxy_buffers                  8 16k;
+
+    # Ensure every request has an id (for downstream correlation)
+    set $request_id_out $request_id_final;
+    if ($request_id_out = "") { set $request_id_out $request_id; }
+
+    proxy_intercept_errors on;
+    error_page 502 503 504 = @api_upstream_error;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; frame-ancestors 'none'" always;
+
+    # ─── Auth subrequest ────────────────────────────────────────────────────
+    # Internal-only location; nginx auth_request routes here before every /api/*
+    # call. Accounts returns 200 + X-Auth-* response headers on valid token,
+    # 401 otherwise. See PRD §5.
+    location = /_internal/auth {
+        internal;
+        proxy_pass              ${ACCOUNTS_UPSTREAM}/internal/validate-token;
+        proxy_pass_request_body off;
+        proxy_set_header        Content-Length "";
+        proxy_set_header        X-Original-URI   $request_uri;
+        proxy_set_header        X-Original-Method $request_method;
+        proxy_set_header        X-Internal-Secret ${INTERNAL_SHARED_SECRET};
+        proxy_set_header        X-Request-ID     $request_id_out;
+        # Both auth paths are forwarded: Bearer for CLI/desktop (cat_*
+        # tokens), Cookie for browser sessions. Without Cookie here,
+        # every browser request to an auth_request-guarded route fails
+        # 401 because accounts' validate-token sees no credentials —
+        # even though the user is signed in.
+        proxy_set_header        Authorization    $http_authorization;
+        proxy_set_header        Cookie           $http_cookie;
+        proxy_set_header        X-API-Key        $http_x_api_key;
+    }
+
+    # ─── Per-service proxy template ─────────────────────────────────────────
+    # Each /api/<name>/* location shares the same auth + header-injection
+    # pattern, differing only in upstream. Shared snippets live in
+    # /etc/nginx/snippets/ so each block stays small.
+
+    # Path translation for each service: strip /api/<service>/ and replace
+    # with /api/, so /api/source/org/invites/123 → source's /api/org/invites/123.
+    # Services keep their existing /api/* route trees; only the gateway
+    # prefix is new.
+
+    location /api/accounts/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${ACCOUNTS_UPSTREAM}/api/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # Public developer endpoints — marketplace browse + registry + category
+    # list + individual space detail. Reached by unauthenticated users (the
+    # construct-app Tauri client loads these before any sign-in), so they
+    # must NOT go through auth_request. Ordered before the generic
+    # /api/developer/ block so these exact matches win.
+    location = /api/developer/spaces {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${DEVELOPER_UPSTREAM}/api/spaces;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location = /api/developer/registry {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${DEVELOPER_UPSTREAM}/api/registry;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location = /api/developer/categories {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${DEVELOPER_UPSTREAM}/api/categories;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    # Single space detail: /api/developer/spaces/<name>. Regex so we don't
+    # accidentally expose /api/developer/spaces/mine (that one stays
+    # behind auth).
+    location ~ ^/api/developer/spaces/(?!mine$)([^/]+)$ {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${DEVELOPER_UPSTREAM}/api/spaces/$1;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # Marketplace tarballs — public so unauthenticated Tauri clients can
+    # install a space before login. Path: /api/developer/downloads/<name>/<ver>/bundle.tar.gz.
+    # Upstream is the developer service; no auth_request — version-pinned
+    # bundles are already immutable by name.
+    location ~ ^/api/developer/downloads/ {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${DEVELOPER_UPSTREAM};
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    location /api/developer/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DEVELOPER_UPSTREAM}/api/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # Standalone marketplace catalog. Admin routes intentionally stay off this
+    # gateway prefix; only /api/marketplace/* is exposed here.
+    location = /api/marketplace/health {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${MARKETPLACE_UPSTREAM}/api/health;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    # Install telemetry — desktop posts here on successful install. Upstream
+    # route is /internal/install-events and is gated by X-Internal-Secret;
+    # gateway authenticates the user, then signs the proxied request.
+    location = /api/marketplace/install-events {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+        proxy_set_header X-Internal-Secret ${INTERNAL_SHARED_SECRET};
+        proxy_pass ${MARKETPLACE_UPSTREAM}/internal/install-events;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location /api/marketplace/ {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${MARKETPLACE_UPSTREAM}/api/marketplace/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # Public provider catalog — first-run clients (Construct desktop app
+    # before sign-in) fetch the AI provider list to populate the model
+    # picker. Catalog moved out of source-api into the dedicated
+    # provider-api on 2026-05-11. The /api/source/providers path stays
+    # intentionally — older operator versions in the wild still call it,
+    # and aliasing here is cheaper than coordinating a desktop release.
+    # Ordered before the generic /api/source/ block so exact matches win.
+    location = /api/source/providers {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${PROVIDER_UPSTREAM}/api/providers;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location = /api/source/providers/catalog/version {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${PROVIDER_UPSTREAM}/api/providers/catalog/version;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    location /api/source/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${SOURCE_UPSTREAM}/api/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # Device bus — cross-device pub/sub (assistant.ask, scheduler.claim_now,
+    # …). Migrated from delivery-api so source produces and consumes the
+    # bus locally (delivery is on a separate swarm; cross-VPS hops for
+    # every assistant.ask were wasteful). Delivery keeps notifications.
+    #
+    # /ws is a WebSocket upgrade endpoint. The browser/Tauri WebSocket
+    # constructor cannot set Authorization headers, so source's handler
+    # accepts the token via `?token=cat_…` query param. Gateway-level
+    # auth_request would reject query-only auth (it forwards header +
+    # cookie, not query), so this endpoint is exempt from auth_request
+    # and source's middleware does the actual validation.
+    #
+    # /relay is a normal authenticated POST. auth_request applies.
+    location = /api/device-bus/ws {
+        include    /etc/nginx/snippets/cors.conf;
+        # $is_args$args preserves the ?token=... query string. Without
+        # it nginx silently drops the query when proxy_pass has an
+        # explicit URI (browser/Tauri WebSocket can't set headers, so
+        # query token is the ONLY auth path for this endpoint, and
+        # losing it returns 401 every time).
+        proxy_pass ${SOURCE_UPSTREAM}/api/device-bus/ws$is_args$args;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+        # WebSocket upgrade — must come AFTER the include so it
+        # overrides upstream-headers.conf's `Connection ""` (which is
+        # there to disable upstream keepalive for normal HTTP and
+        # would silently break the WS handshake by stripping the
+        # Upgrade signal otherwise).
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_read_timeout 1h;
+    }
+    location = /api/device-bus/relay {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${SOURCE_UPSTREAM}/api/device-bus/relay;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location = /api/device-bus/operator/status {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${SOURCE_UPSTREAM}/api/device-bus/operator/status;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # Construct — platform-managed AI provider. The model list is
+    # public (same reasoning as /api/source/providers — desktop fetches
+    # it before sign-in to populate the picker); the chat/usage paths
+    # require an authenticated session so provider-api can scope
+    # credits per user.
+    location = /api/construct/models {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${PROVIDER_UPSTREAM}/api/construct/models;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location /api/construct/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        # Chat is a streaming SSE endpoint; raise upstream timeouts so
+        # long agent loops aren't killed mid-stream.
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+
+        proxy_pass ${PROVIDER_UPSTREAM}/api/construct/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # OpenAI-compatible inference surface. Same provider-api upstream
+    # and auth contract as /api/construct/; this is the canonical URL
+    # (any OpenAI SDK works with base_url=https://my.lisaos.dev/api/inference/v1).
+    # /api/inference/v1/models is public (picker discovery); chat/completions
+    # is session-authed.
+    location = /api/inference/v1/models {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${PROVIDER_UPSTREAM}/api/inference/v1/models;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location /api/inference/v1/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+
+        proxy_pass ${PROVIDER_UPSTREAM}/api/inference/v1/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # Delivery — tenant-facing domain/message/key management. Same auth
+    # contract as accounts/developer/source: gateway validates the session
+    # against accounts, then injects X-Auth-* headers. Delivery-api trusts
+    # the gateway and maps X-Auth-User-ID to its tenant record.
+    #
+    # Lives on its own VPS, reached via public FQDN
+    # (https://delivery.lisaos.dev). Host is hardcoded because nginx
+    # does not reliably populate $proxy_host when proxy_pass uses a
+    # variable upstream — leaving Host as the original my.lisaos.dev
+    # makes CapRover at the upstream fall back to its default
+    # "Nothing here yet" page on every authenticated request.
+    location /api/delivery/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DELIVERY_UPSTREAM}/api/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        # Foreign upstream — CapRover edge in front of delivery.lisaos.dev
+        # routes by Host header. Must match its vhost or 404.
+        proxy_set_header Host delivery.lisaos.dev;
+        # The gateway has already authenticated the browser cookie. Do not
+        # forward it to the public delivery upstream: large portal cookies can
+        # exceed the upstream edge header buffers, especially on EventSource.
+        proxy_set_header Cookie "";
+        proxy_ssl_server_name on;
+        proxy_ssl_name        delivery.lisaos.dev;
+    }
+
+    # Notifications — same upstream as /api/delivery/, but delivery-api
+    # registers these routes at /api/notifications/* (not /api/delivery/
+    # notifications/*), so the gateway forwards the path unchanged.
+    # /stream is SSE: disable proxy buffering and extend read timeout
+    # so events flush to the browser in real time.
+    #
+    # /ws is a native WebSocket endpoint used by the desktop notification
+    # bridge. The Tauri client authenticates with ?token=cat_... because
+    # WebSocket constructors cannot set Authorization headers. Gateway
+    # auth_request would reject query-only auth, so this exact endpoint is
+    # exempt and delivery-api's WithAuthOrQueryToken middleware validates
+    # the token downstream.
+    location = /api/notifications/ws {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${DELIVERY_UPSTREAM}/api/notifications/ws$is_args$args;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host delivery.lisaos.dev;
+        proxy_set_header Cookie "";
+        proxy_ssl_server_name on;
+        proxy_ssl_name        delivery.lisaos.dev;
+
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+
+    # Exact-match for the bare list endpoint (no trailing slash) — the
+    # prefix location below only catches paths starting with the slash.
+    location = /api/notifications {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DELIVERY_UPSTREAM}/api/notifications;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host delivery.lisaos.dev;
+        proxy_set_header Cookie "";
+        proxy_ssl_server_name on;
+        proxy_ssl_name        delivery.lisaos.dev;
+    }
+    location /api/notifications/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DELIVERY_UPSTREAM}/api/notifications/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host delivery.lisaos.dev;
+        proxy_set_header Cookie "";
+        proxy_ssl_server_name on;
+        proxy_ssl_name        delivery.lisaos.dev;
+
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_read_timeout 1h;
+    }
+
+    # /api/devices/ + /api/operator/status moved to source-api on
+    # 2026-05-20 (see the /api/device-bus/* block above). Removed
+    # from the gateway after both mobile + desktop clients shipped
+    # the new endpoints.
+
+    # Domains — tenant-facing domain registration, DNS, URL forwarding.
+    # Deployed as a CapRover app on MAIN; reached over the internal Swarm
+    # network as http://srv-captain--domains-api to avoid the public TLS
+    # hop (which was 400ing on header-buffer overflow).
+    location = /api/domains/search {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${DOMAINS_UPSTREAM}/api/search;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie "";
+    }
+    location = /api/domains/pricing {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${DOMAINS_UPSTREAM}/api/pricing;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie "";
+    }
+    location = /api/domains/checkout {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DOMAINS_UPSTREAM}/api/checkout;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie "";
+    }
+    location /api/domains/checkout/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DOMAINS_UPSTREAM}/api/checkout/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie "";
+    }
+    location = /api/domains/orders {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DOMAINS_UPSTREAM}/api/orders;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie "";
+    }
+    location /api/domains/orders/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DOMAINS_UPSTREAM}/api/orders/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie "";
+    }
+    location = /api/domains {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DOMAINS_UPSTREAM}/api/domains;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie "";
+    }
+    location = /api/domains/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DOMAINS_UPSTREAM}/api/domains;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie "";
+    }
+    location /api/domains/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${DOMAINS_UPSTREAM}/api/domains/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+        proxy_set_header Cookie "";
+    }
+
+    # Billing — public plans plus authenticated customer/subscription flows.
+    location = /api/billing/plans {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${BILLING_UPSTREAM}/api/plans;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location = /api/billing/health {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${BILLING_UPSTREAM}/api/health;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location /api/billing/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${BILLING_UPSTREAM}/api/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # Storage — authenticated writes; reads are public objects by bucket/key.
+    location = /api/storage/health {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${STORAGE_UPSTREAM}/api/health;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location = /api/storage/api/health {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${STORAGE_UPSTREAM}/api/health;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    location ~ ^/api/storage/(presign|upload)$ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${STORAGE_UPSTREAM}/api/storage/$1;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+    # Catch-all for the rest of /api/storage/* — covers DELETE on
+    # /api/storage/{bucket}/{key...} (user deleting their own object)
+    # and any future per-key routes (HEAD/exists, signed GETs).
+    # Auth_request gates the session; upstream-headers.conf injects
+    # the X-Auth-* identity + X-Internal-Secret. storage-api decides
+    # per route whether session-auth or admin-auth is required.
+    location /api/storage/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${STORAGE_UPSTREAM}/api/storage/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # GraphQL lives at /graphql on the graph service (NOT under /api). The
+    # generic /api/graph/ block below proxies to the graph upstream's
+    # /api/<path>, which would turn /api/graph/graphql into /api/graphql
+    # and 405.
+    # Exact match carves it out and rewrites to the correct path.
+    location = /api/graph/graphql {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+        proxy_pass ${GRAPH_UPSTREAM}/graphql;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    location /api/graph/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${GRAPH_UPSTREAM}/api/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # Telemetry ingest — desktop operator ships identified device + event
+    # batches here. Same auth contract as the rest of the user-facing APIs:
+    # gateway validates the caller, then forwards Authorization plus
+    # X-Auth-* headers to telemetry-api.
+    location /api/telemetry/ {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        proxy_pass ${TELEMETRY_UPSTREAM}/api/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # ─── TURN credentials (Meet WebRTC relay) ───────────────────────────────
+    # Auth-gated: only signed-in users get short-lived TURN credentials. The
+    # turn-auth service mints an HMAC credential coturn validates with the
+    # shared secret. upstream-headers.conf forwards X-Auth-User-ID (attribution)
+    # and X-Internal-Secret (so turn-auth only accepts gateway traffic).
+    location = /api/turn/credentials {
+        include      /etc/nginx/snippets/cors.conf;
+        auth_request /_internal/auth;
+        include      /etc/nginx/snippets/auth-inject.conf;
+
+        # Resolve turn-auth at REQUEST time via Docker Swarm's embedded DNS,
+        # not at nginx start. A literal proxy_pass hostname is resolved once at
+        # boot, so if this optional upstream is missing the WHOLE gateway fails
+        # to start (502 everywhere). Using a variable + resolver keeps the
+        # gateway up; only this route 502s if turn-auth is down.
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $turn_auth_upstream ${TURN_AUTH_UPSTREAM};
+        proxy_pass $turn_auth_upstream/credentials;
+
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # ─── OAuth 2.0 endpoints (no auth_request — they issue tokens) ──────────
+    # Accounts owns /oauth/* verbatim — we preserve the path so clients see
+    # the standard OAuth paths without gateway magic.
+    # my.lisaos.dev/api/oauth/authorize → accounts/oauth/authorize, etc.
+    location /api/oauth/ {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${ACCOUNTS_UPSTREAM}/oauth/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # The "Authorization Successful" HTML page that accounts returns to the
+    # browser after /api/oauth/authorize polls /oauth/code-status?code=... as
+    # a relative URL. Without this block nginx serves the SPA index.html,
+    # the page's fetch().then(r => r.json()) throws, and the tab never updates
+    # to "Signed in successfully — you may close this tab".
+    location /oauth/ {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${ACCOUNTS_UPSTREAM}/oauth/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # ─── Deep-link bridge: /open/<space>/<path> → construct://app/<space>/<path>
+    # A static interstitial (open.html) that bounces shareable web links into
+    # the desktop app's custom scheme. No auth, no backend — the page reads
+    # window.location in JS and builds the construct:// URL client-side. `^~`
+    # stops any regex location from grabbing it, and try_files pins every
+    # /open/* path to the single interstitial file (not the SPA index).
+    location ^~ /open/ {
+        root      /usr/share/nginx/html;
+        try_files /open.html =404;
+    }
+
+    # ─── Session auth endpoints (no auth_request — they establish sessions) ─
+    # Username/password login, register, logout, CSRF token. These live at
+    # accounts/api/auth/* already — the gateway prefix is the same so it's
+    # a straight pass-through into accounts' namespace.
+    location /api/auth/ {
+        include    /etc/nginx/snippets/cors.conf;
+        proxy_pass ${ACCOUNTS_UPSTREAM}/api/auth/;
+        include    /etc/nginx/snippets/upstream-headers.conf;
+        proxy_set_header Host $host;
+    }
+
+    # ─── Unauthenticated auth-adjacent flows ────────────────────────────────
+    # Second-factor challenge after login, passkey login challenge, password
+    # reset. All of these either precede or replace a session and so can't
+    # be gated by a bearer token. They're proxied verbatim — accounts owns
+    # their validation, rate limiting, and enumeration protection.
+    location /api/verify-2fa        { include /etc/nginx/snippets/cors.conf; proxy_pass ${ACCOUNTS_UPSTREAM}/verify-2fa;        include /etc/nginx/snippets/upstream-headers.conf; proxy_set_header Host $host; }
+    location /api/forgot-password   { include /etc/nginx/snippets/cors.conf; proxy_pass ${ACCOUNTS_UPSTREAM}/forgot-password;   include /etc/nginx/snippets/upstream-headers.conf; proxy_set_header Host $host; }
+    location /api/reset-password    { include /etc/nginx/snippets/cors.conf; proxy_pass ${ACCOUNTS_UPSTREAM}/reset-password;    include /etc/nginx/snippets/upstream-headers.conf; proxy_set_header Host $host; }
+    location /api/passkey/login/    { include /etc/nginx/snippets/cors.conf; proxy_pass ${ACCOUNTS_UPSTREAM}/api/passkey/login/; include /etc/nginx/snippets/upstream-headers.conf; proxy_set_header Host $host; }
+
+    # Unknown API routes must stay API-shaped. Without this block, typos and
+    # missing services fall through to index.html with HTTP 200.
+    location /api/ {
+        include /etc/nginx/snippets/cors.conf;
+        default_type application/json;
+        return 404 '{"error":"not_found","request_id":"$request_id_out"}';
+    }
+
+    location @api_upstream_error {
+        include /etc/nginx/snippets/cors.conf;
+        default_type application/json;
+        return 502 '{"error":"upstream_unavailable","request_id":"$request_id_out"}';
+    }
+
+    # ─── SPA fallback ───────────────────────────────────────────────────────
+    location / {
+        root       /usr/share/nginx/html;
+        index      index.html;
+        try_files  $uri $uri/ /index.html;
+    }
+
+    # ─── Standardized error bodies ──────────────────────────────────────────
+    error_page 401 = @unauthorized;
+    error_page 502 = @bad_gateway;
+    error_page 504 = @gateway_timeout;
+
+    # Error pages need their own CORS headers: the outer location's
+    # add_header runs when nginx serves from that block, but an
+    # auth_request-triggered 401 jumps here before those directives apply.
+    # Without these, the browser surfaces every stale-token response as a
+    # "CORS error" instead of a clean 401 the SPA can react to.
+    location @unauthorized {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin       $cors_origin  always;
+        add_header Access-Control-Allow-Credentials  'true'        always;
+        return 401 '{"error":"unauthorized","request_id":"$request_id_out"}';
+    }
+    location @bad_gateway {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin       $cors_origin  always;
+        add_header Access-Control-Allow-Credentials  'true'        always;
+        return 502 '{"error":"upstream_unavailable","request_id":"$request_id_out"}';
+    }
+    location @gateway_timeout {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin       $cors_origin  always;
+        add_header Access-Control-Allow-Credentials  'true'        always;
+        return 504 '{"error":"upstream_timeout","request_id":"$request_id_out"}';
+    }
+}

@@ -1,0 +1,68 @@
+@import "tailwindcss";
+
+/*
+ * Tell Tailwind that Rubik is our default sans. Tailwind 4's preflight
+ * sets `--default-font-family` on html/body and various utilities
+ * (`font-sans`, etc.) inherit from `--font-sans` — without overriding
+ * here our html/body rule gets shadowed on every element that sets
+ * its own font-family through those utilities.
+ *
+ * The actual Rubik @font-face comes from Google Fonts via index.html
+ * (a <link rel="stylesheet"> so Vite/Tailwind don't reorder the @import).
+ */
+@theme {
+  /* 'Rubik Variable' is the family name @fontsource-variable/rubik uses.
+     'Rubik' is the static-font fallback (legacy accounts page, Google
+     Fonts, anyone else shipping it statically). System stack after. */
+  --font-sans: 'Rubik Variable', 'Rubik', -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
+  --default-font-family: var(--font-sans);
+}
+
+/*
+ * Tailwind v4 auto-detects sources from the Vite entry. Because spaces
+ * and packages live in sibling workspace dirs, we add explicit @source
+ * globs so utility classes inside space + ui-web + infra-shell .vue
+ * files get compiled. Without these, classes like grid-cols-[160px_1fr]
+ * and color-mix arbitrary values vanish.
+ */
+@source "../../../spaces/**/*.{vue,ts,tsx}";
+@source "../../../packages/**/*.{vue,ts,tsx}";
+
+/*
+ * Only the minimal resets + page-level chrome live here. All color/tone
+ * vars come from @construct-space/ui-web's useTheme().init() which sets
+ * --app-background, --app-foreground, --app-accent, --app-border, etc.
+ * on :root. Components reference var(--app-*) directly.
+ */
+
+* { box-sizing: border-box; }
+
+html, body, #app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  /* Rubik is the brand face. System stack is the fallback chain that
+     stays readable while the web font loads (display:swap) and on any
+     future offline build. */
+  font-family: 'Rubik Variable', 'Rubik', -apple-system, system-ui, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+body {
+  background: var(--app-canvas-bg, #f1f5f9);
+  color: var(--app-foreground, #0f172a);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a { color: inherit; text-decoration: none; }
+button { font: inherit; }
+
+/* `.mono` is now a pure styling shorthand — letter-spacing + uppercase
+ * look only, no font-family override. Everything inherits Rubik so the
+ * portal reads as one typeface. If we ever want a real mono back for
+ * code blocks or UUIDs, introduce an explicit `.code` class instead. */
+.mono {
+  letter-spacing: 0.02em;
+}

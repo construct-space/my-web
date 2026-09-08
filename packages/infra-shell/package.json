@@ -1,0 +1,22 @@
+{
+  "name": "@construct-space/infra-shell",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Reusable shell for Construct infra portals — types, Core settings pages, and shared components. Consumed by Construct Account and any future infra host.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "peerDependencies": {
+    "@construct-space/infra": "workspace:*",
+    "@construct-space/ui-web": "workspace:*",
+    "@iconify/vue": "^5.0.0",
+    "pinia": "^3.0.0",
+    "vue": "^3.5.0"
+  }
+}

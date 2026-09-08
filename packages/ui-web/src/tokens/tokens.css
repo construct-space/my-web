@@ -1,0 +1,38 @@
+/**
+ * Construct UI — Reka UI state overrides & utility keyframes
+ *
+ * Import this file in your app if you use Reka UI primitives directly
+ * or need the indeterminate progress animation.
+ *
+ * The host app (or useTheme().init()) owns all --app-* variables.
+ * Components reference var(--app-*) via Tailwind arbitrary values.
+ */
+
+/* reka-ui checked state overrides */
+[data-state="checked"].bg-primary,
+[data-state="checked"].bg-neutral,
+button[role="switch"][data-state="checked"] {
+  background-color: var(--app-accent) !important;
+}
+
+button[role="checkbox"][data-state="checked"],
+[role="checkbox"][data-state="checked"] {
+  background-color: var(--app-accent) !important;
+  border-color: var(--app-accent) !important;
+}
+
+[data-radix-slider-range],
+[role="slider"] [data-orientation] > span:first-child {
+  background-color: var(--app-accent) !important;
+}
+
+[data-radix-slider-thumb],
+[role="slider"] span[role="slider"] {
+  border-color: var(--app-accent) !important;
+}
+
+/* Progress indeterminate animation */
+@keyframes cui-progress-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}

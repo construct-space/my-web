@@ -1,0 +1,32 @@
+{
+  "name": "@construct-space/infra",
+  "version": "0.0.1",
+  "description": "Typed HTTP clients for Construct infra services (accounts, developer, source, graph, oracle).",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts",
+      "types": "./src/index.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": ["construct", "infra", "sdk", "accounts"],
+  "author": { "name": "Construct Team" },
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^6.0.2"
+  }
+}
